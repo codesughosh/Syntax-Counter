@@ -45,12 +45,14 @@ class _SyntaxCounterScreenState extends State<SyntaxCounterScreen> {
   }
 
   void _initSpeech() async {
-    _speechAvailable = await _speech.initialize(
-      onStatus: (status) => print('Speech status: $status'),
-      onError: (errorNotification) => print('Speech error: $errorNotification'),
-    );
-    setState(() {});
-  }
+  _speechAvailable = await _speech.initialize(
+    onStatus: (status) => print('🟡 Speech status: $status'),
+    onError: (errorNotification) => print('🔴 Speech error: $errorNotification'),
+  );
+  print("🟢 Speech initialized: $_speechAvailable");
+  setState(() {});
+}
+
 
   void _toggleListening() async {
   if (!_speechAvailable) {
@@ -58,29 +60,73 @@ class _SyntaxCounterScreenState extends State<SyntaxCounterScreen> {
     return;
   }
 
-  // ✅ Ask for microphone permission
   if (await Permission.microphone.request().isGranted) {
     if (_isListening) {
-      _speech.stop();
       setState(() => _isListening = false);
+      await _speech.stop();
+      await _speech.cancel(); // ✅ fully stop mic
+      print("🛑 Listening stopped manually");
     } else {
-      _speech.listen(
-        onResult: (result) {
-          if (result.finalResult && result.recognizedWords != _lastRecognized) {
-            setState(() {
-              _lastRecognized = result.recognizedWords;
-              _count += _countOccurrences(result.recognizedWords, _targetWord);
-            });
-          }
-        },
-        listenMode: stt.ListenMode.confirmation,
-      );
       setState(() => _isListening = true);
+      _startListening();
     }
   } else {
     print("Microphone permission denied");
   }
 }
+
+
+void _startListening() async {
+  if (!_speechAvailable) {
+    print("❌ Speech not available");
+    return;
+  }
+
+  print("🎧 Starting to listen (continuous mode)...");
+
+  // ✅ Set listeners *before* listen()
+  _speech.statusListener = (status) async {
+    print("🟡 Speech status: $status");
+    if (_isListening && status == "notListening") {
+      print("♻️ Auto-restart (status)");
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (_isListening) _startListening();
+    }
+  };
+
+  _speech.errorListener = (error) async {
+    print("🔴 Speech error: ${error.errorMsg}");
+    if (_isListening &&
+        error.errorMsg != "error_client" &&
+        error.errorMsg != "error_busy") {
+      print("♻️ Auto-restart (error)");
+      await Future.delayed(const Duration(milliseconds: 500));
+      _startListening();
+    }
+  };
+
+  await _speech.listen(
+    onResult: (result) {
+      if (result.recognizedWords.isNotEmpty &&
+          result.recognizedWords != _lastRecognized) {
+        setState(() {
+          _lastRecognized = result.recognizedWords;
+          _count += _countOccurrences(result.recognizedWords, _targetWord);
+        });
+        print("🎙️ Heard: ${result.recognizedWords}");
+      }
+    },
+    listenMode: stt.ListenMode.dictation,
+    partialResults: true,
+    cancelOnError: false,
+    listenFor: const Duration(minutes: 30), // 🔸 long session
+    pauseFor: const Duration(minutes: 5),   // 🔸 tolerate long silence
+    localeId: 'en_IN',
+  );
+
+  setState(() => _isListening = true);
+}
+
 
 
   int _countOccurrences(String text, String word) {
